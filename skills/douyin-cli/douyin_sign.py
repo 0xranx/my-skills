@@ -327,52 +327,102 @@ def search_users(keyword: str, timeout: int = 20) -> dict:
 
 # ── 视频详情 ─────────────────────────────────────
 
-def get_video_detail(aweme_id: str, timeout: int = 20) -> dict:
-    """获取视频详情，优先 API 拦截，fallback 到 RENDER_DATA。"""
+def get_video_detail(aweme_id: str, timeout: int = 25) -> dict:
+    """获取视频详情，API 拦截 + RENDER_DATA fallback。"""
+    _ensure_browser()
     url = f"https://www.douyin.com/video/{aweme_id}"
 
-    # 方式1: API 拦截
-    result = capture_api_response(url, "/aweme/v1/web/aweme/detail/", timeout)
-    if result and result.get("aweme_detail"):
-        return result
+    captured = []
 
-    # 方式2: RENDER_DATA
-    render = extract_render_data(url, timeout)
-    if render:
-        for key, val in render.items():
-            if isinstance(val, dict):
-                detail = val.get("aweme", {}).get("detail")
-                if detail:
-                    return {"aweme_detail": detail}
+    def _on_response(response):
+        if "/web/aweme/detail/" in response.url and response.status == 200:
+            try:
+                data = response.json()
+                if data.get("aweme_detail"):
+                    captured.append(data)
+            except Exception:
+                pass
+
+    _page.on("response", _on_response)
+    try:
+        _page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+        for i in range(60):
+            time.sleep(2)
+            if captured:
+                break
+            if i % 10 == 9:
+                _p(f"  等待加载... ({(i+1)*2}秒)")
+                try:
+                    cap = _page.locator('#captcha_container, iframe[src*="verifycenter"]')
+                    if cap.count() > 0 and cap.first.is_visible():
+                        _p("  请在浏览器中完成验证码...")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    finally:
+        _page.remove_listener("response", _on_response)
+
+    if captured:
+        return captured[0]
+
+    # Fallback: RENDER_DATA
+    try:
+        raw = _page.evaluate('() => { const el = document.getElementById("RENDER_DATA"); return el ? el.textContent : null; }')
+        if raw:
+            data = json.loads(unquote(raw))
+            for key, val in data.items():
+                if isinstance(val, dict):
+                    detail = val.get("aweme", {}).get("detail")
+                    if detail:
+                        return {"aweme_detail": detail}
+    except Exception:
+        pass
 
     return {"aweme_detail": None, "msg": "获取视频详情失败"}
 
 
 # ── 评论 ─────────────────────────────────────────
 
-def get_comments(aweme_id: str, timeout: int = 20) -> dict:
+def get_comments(aweme_id: str, timeout: int = 25) -> dict:
     """获取视频评论，通过 API 拦截。"""
+    _ensure_browser()
     url = f"https://www.douyin.com/video/{aweme_id}"
 
-    _ensure_browser()
     captured = []
 
     def _on_response(response):
-        if "/aweme/v1/web/comment/list/" in response.url and response.status == 200:
-            # 排除 reply 接口
-            if "/reply/" not in response.url:
+        u = response.url
+        if "comment/list" in u and "douyin.com" in u and response.status == 200:
+            if "/reply/" not in u:
                 try:
-                    captured.append(response.json())
+                    data = response.json()
+                    if data.get("comments"):
+                        captured.append(data)
                 except Exception:
                     pass
 
     _page.on("response", _on_response)
     try:
-        _page.goto(url, wait_until="networkidle", timeout=timeout * 1000)
-        time.sleep(3)
-        # 滚动页面触发评论加载
-        _page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-        time.sleep(2)
+        _page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+        # 等待页面加载 + 评论 API 触发
+        for i in range(60):
+            time.sleep(2)
+            if captured:
+                break
+            # 滚动到评论区触发加载
+            if i == 3:
+                _page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+            if i == 6:
+                _page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            if i % 10 == 9:
+                _p(f"  等待评论加载... ({(i+1)*2}秒)")
+                try:
+                    cap = _page.locator('#captcha_container, iframe[src*="verifycenter"]')
+                    if cap.count() > 0 and cap.first.is_visible():
+                        _p("  请在浏览器中完成验证码...")
+                except Exception:
+                    pass
     except Exception:
         pass
     finally:
