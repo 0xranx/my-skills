@@ -239,13 +239,11 @@ def navigate_search_page(keyword: str, timeout: int = 20) -> dict:
 def navigate_note_page(note_id: str, xsec_token: str = "",
                        timeout: int = 20) -> dict:
     """
-    导航到笔记页面，从 SSR 提取笔记详情，同时拦截评论 API 响应。
-    需要 xsec_token（来自搜索结果），否则会被安全重定向到 404。
+    导航到笔记页面，从 Vue 运行时状态提取笔记详情和评论。
 
     Returns:
         {"note": {...}, "comments": [...], "comment_has_more": bool, "comment_cursor": str}
     """
-    import re as _re
     from urllib.parse import quote as _quote
 
     _ensure_browser()
@@ -254,58 +252,87 @@ def navigate_note_page(note_id: str, xsec_token: str = "",
     if xsec_token:
         url += f"?xsec_token={_quote(xsec_token)}&xsec_source=pc_search"
 
-    comment_data = []
-
-    def _on_response(response):
-        if "/api/sns/web/v2/comment/page" in response.url and response.status == 200:
-            try:
-                comment_data.append(response.json())
-            except Exception:
-                pass
-
-    _page.on("response", _on_response)
     try:
         _page.goto(url, wait_until="networkidle", timeout=timeout * 1000)
         time.sleep(3)
     except Exception:
         pass
-    finally:
-        _page.remove_listener("response", _on_response)
 
     if "404" in _page.url:
         return {"note": None, "comments": [],
                 "error": "页面被安全重定向到 404，可能缺少 xsec_token"}
 
-    note = {}
-    html = _page.content()
-    match = _re.search(
-        r'window\.__INITIAL_STATE__\s*=\s*({.*?})\s*</script>', html, _re.DOTALL
-    )
-    if match:
-        raw = match.group(1).replace(":undefined", ":null")
-        state = json.loads(raw)
-        detail_map = state.get("note", {}).get("noteDetailMap", {})
-        for v in detail_map.values():
-            n = v.get("note", {})
-            if n:
-                note = n
-                break
+    try:
+        result = _page.evaluate('''() => {
+            const s = window.__INITIAL_STATE__;
+            if (!s || !s.note) return null;
+            const noteMap = s.note.noteDetailMap;
+            if (!noteMap) return null;
+            const noteId = Object.keys(noteMap)[0];
+            if (!noteId) return null;
+            const detail = noteMap[noteId];
 
-    comments = []
-    has_more = False
-    cursor = ""
-    if comment_data:
-        cdata = comment_data[0].get("data", {})
-        comments = cdata.get("comments", [])
-        has_more = cdata.get("has_more", False)
-        cursor = cdata.get("cursor", "")
+            // 提取笔记详情
+            let noteData = detail.note;
+            if (noteData && noteData._rawValue !== undefined) noteData = noteData._rawValue;
 
-    return {
-        "note": note or None,
-        "comments": comments,
-        "comment_has_more": has_more,
-        "comment_cursor": cursor,
-    }
+            // 提取评论
+            let commentsObj = detail.comments;
+            if (commentsObj && commentsObj._rawValue !== undefined) commentsObj = commentsObj._rawValue;
+
+            let commentList = [];
+            let cursor = '';
+            let hasMore = false;
+
+            if (commentsObj) {
+                let list = commentsObj.list;
+                if (list && list._rawValue !== undefined) list = list._rawValue;
+                if (Array.isArray(list)) {
+                    commentList = list.map(c => ({
+                        id: c.id || '',
+                        content: c.content || '',
+                        likeCount: c.likeCount || '0',
+                        subCommentCount: c.subCommentCount || '0',
+                        createTime: c.createTime || 0,
+                        userInfo: {
+                            userId: (c.userInfo || {}).userId || '',
+                            nickname: (c.userInfo || {}).nickname || '',
+                            image: (c.userInfo || {}).image || '',
+                        },
+                        subComments: (c.subComments || []).map(sc => ({
+                            id: sc.id || '',
+                            content: sc.content || '',
+                            likeCount: sc.likeCount || '0',
+                            createTime: sc.createTime || 0,
+                            userInfo: {
+                                userId: (sc.userInfo || {}).userId || '',
+                                nickname: (sc.userInfo || {}).nickname || '',
+                            },
+                        })),
+                    }));
+                }
+                let c = commentsObj.cursor;
+                if (c && c._rawValue !== undefined) c = c._rawValue;
+                cursor = c || '';
+                let hm = commentsObj.hasMore;
+                if (hm && hm._rawValue !== undefined) hm = hm._rawValue;
+                hasMore = !!hm;
+            }
+
+            return {note: noteData, comments: commentList, cursor: cursor, hasMore: hasMore};
+        }''')
+
+        if result:
+            return {
+                "note": result.get("note"),
+                "comments": result.get("comments", []),
+                "comment_has_more": result.get("hasMore", False),
+                "comment_cursor": result.get("cursor", ""),
+            }
+    except Exception:
+        pass
+
+    return {"note": None, "comments": [], "comment_has_more": False, "comment_cursor": ""}
 
 
 def navigate_user_posted(user_id: str, timeout: int = 20) -> list[dict]:

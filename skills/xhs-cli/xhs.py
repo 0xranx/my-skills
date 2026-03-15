@@ -118,19 +118,21 @@ def fmt_comments(data: dict) -> str:
         return "暂无评论"
     lines = [f"评论 ({len(comments)} 条, {'还有更多' if has_more else '全部'}):\n"]
     for i, c in enumerate(comments, 1):
-        ui = c.get("user_info", {})
+        ui = c.get("user_info") or c.get("userInfo") or {}
         nickname = ui.get("nickname", "匿名")
-        uid = ui.get("user_id", "")
+        uid = ui.get("user_id") or ui.get("userId") or ""
         content = c.get("content", "").replace("\n", " ")
-        likes = c.get("like_count", "0")
-        subs = c.get("sub_comment_count", 0)
-        ts = _ts_to_str(c.get("create_time"))
-        ip = c.get("ip_location", "")
+        likes = c.get("like_count") or c.get("likeCount") or "0"
+        subs = c.get("sub_comment_count") or c.get("subCommentCount") or 0
+        ts = _ts_to_str(c.get("create_time") or c.get("createTime"))
+        ip = c.get("ip_location") or c.get("ipLocation") or ""
         lines.append(f"  {i}. [{nickname}] {content}")
         lines.append(f"     uid: {uid} | 赞: {likes} | 回复: {subs} | {ts} | {ip}")
-        for sc in c.get("sub_comments", [])[:2]:
-            sc_ui = sc.get("user_info", {})
-            lines.append(f"       ↳ [{sc_ui.get('nickname', '?')}] (uid:{sc_ui.get('user_id', '?')}) {sc.get('content', '')[:60]}")
+        for sc in (c.get("sub_comments") or c.get("subComments") or [])[:2]:
+            sc_ui = sc.get("user_info") or sc.get("userInfo") or {}
+            sc_nick = sc_ui.get("nickname", "?")
+            sc_uid = sc_ui.get("user_id") or sc_ui.get("userId") or "?"
+            lines.append(f"       ↳ [{sc_nick}] (uid:{sc_uid}) {sc.get('content', '')[:60]}")
         lines.append("")
     return "\n".join(lines)
 
