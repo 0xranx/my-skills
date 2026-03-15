@@ -51,7 +51,7 @@ def _ensure_browser():
     from playwright_stealth import Stealth
 
     _playwright = sync_playwright().start()
-    _browser = _playwright.chromium.launch(headless=True)
+    _browser = _playwright.chromium.launch(headless=False)
     _context = _browser.new_context(
         user_agent=(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -358,19 +358,32 @@ def login_interactive(timeout: int = 120):
     _p(f"浏览器已打开，请扫码登录小红书（{timeout} 秒内完成）。")
     _p("登录成功后会自动检测并保存 Cookie...")
 
+    # 等登录弹窗出现
+    login_modal = _page.locator('.login-modal')
+    try:
+        login_modal.wait_for(state="visible", timeout=15000)
+        _p("登录弹窗已出现，请用小红书 App 扫码...")
+    except Exception:
+        _p("未检测到登录弹窗，页面结构可能已变更")
+
+    # 等弹窗消失（扫码成功后 login-modal 会关闭）
     done = False
     for i in range(timeout // 2):
         time.sleep(2)
-        # 自动检测：登录成功后会出现 a1 cookie
-        cookies = _context.cookies()
-        has_a1 = any(c["name"] == "a1" and len(c["value"]) > 10 for c in cookies)
-        has_web_session = any(c["name"] == "web_session" for c in cookies)
-        if has_a1 and has_web_session:
+        try:
+            # login-modal 消失 = 登录成功
+            if not login_modal.is_visible():
+                time.sleep(3)  # 等页面完成跳转
+                done = True
+                _p("检测到登录成功，正在保存 Cookie...")
+                break
+        except Exception:
+            time.sleep(3)
             done = True
             _p("检测到登录成功，正在保存 Cookie...")
             break
         if i % 10 == 9:
-            _p(f"  仍在等待... ({(i + 1) * 2}秒)")
+            _p(f"  仍在等待扫码... ({(i + 1) * 2}秒)")
 
     if not done:
         _p("等待超时。关闭浏览器。")
