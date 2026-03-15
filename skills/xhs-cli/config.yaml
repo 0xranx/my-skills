@@ -1,0 +1,6 @@
+# 小红书 CLI 配置
+# 也可通过环境变量设置: XHS_ACCOUNT_NAME, XHS_SEARCH_KEYWORD
+
+# 账号信息（stats 命令用，可选）
+account_name: ""         # 小红书昵称（用于过滤自己的帖子）
+search_keyword: ""       # 搜索自己帖子的关键词
