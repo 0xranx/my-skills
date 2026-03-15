@@ -354,19 +354,20 @@ def login_interactive(timeout: int = 120):
     stealth.apply_stealth_sync(_page)
 
     _page.goto("https://www.xiaohongshu.com", wait_until="domcontentloaded")
-    signal_file = COOKIE_FILE.parent / ".login_done"
-    signal_file.unlink(missing_ok=True)
 
     _p(f"浏览器已打开，请扫码登录小红书（{timeout} 秒内完成）。")
-    _p("正在等待登录信号...")
+    _p("登录成功后会自动检测并保存 Cookie...")
 
     done = False
     for i in range(timeout // 2):
         time.sleep(2)
-        if signal_file.exists():
-            signal_file.unlink(missing_ok=True)
+        # 自动检测：登录成功后会出现 a1 cookie
+        cookies = _context.cookies()
+        has_a1 = any(c["name"] == "a1" and len(c["value"]) > 10 for c in cookies)
+        has_web_session = any(c["name"] == "web_session" for c in cookies)
+        if has_a1 and has_web_session:
             done = True
-            _p("收到登录信号，正在保存 Cookie...")
+            _p("检测到登录成功，正在保存 Cookie...")
             break
         if i % 10 == 9:
             _p(f"  仍在等待... ({(i + 1) * 2}秒)")
