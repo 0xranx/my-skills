@@ -47,12 +47,12 @@ def _ensure_browser():
         return
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    profile_dir = DATA_DIR / "profile"
+    profile_dir.mkdir(parents=True, exist_ok=True)
 
-    # 用 --user-data-dir 持久化所有浏览器数据（cookie/session/localStorage）
     _run(
         f'agent-browser open "https://www.douyin.com" '
-        f'--headed --session-name douyin_session',
+        f'--headed --profile "{profile_dir}"',
         timeout=30
     )
     time.sleep(3)
@@ -65,7 +65,7 @@ def _close_browser():
     _browser_open = False
 
 
-def _wait_for_content(selector: str, label: str = "内容", max_wait: int = 180) -> bool:
+def _wait_for_content(selector: str, label: str = "内容", max_wait: int = 300) -> bool:
     """等待页面上出现指定元素（用户可在浏览器中处理验证码/登录）。"""
     _p(f"等待{label}加载（如有验证码或登录弹窗，请在浏览器中完成）...")
     for i in range(max_wait // 2):
@@ -301,12 +301,13 @@ def login_interactive(timeout: int = 300):
     """打开浏览器让用户完成所有验证和登录。使用持久化 profile 保存状态。"""
     _run("agent-browser close", timeout=5)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    profile_dir = DATA_DIR / "profile"
+    profile_dir.mkdir(parents=True, exist_ok=True)
 
     _p("正在打开抖音...")
     _run(
         f'agent-browser open "https://www.douyin.com" '
-        f'--headed --session-name douyin_session',
+        f'--headed --profile "{profile_dir}"',
         timeout=30
     )
     time.sleep(3)
@@ -321,7 +322,7 @@ def login_interactive(timeout: int = 300):
 
     for i in range(timeout // 3):
         time.sleep(3)
-        output = _run("agent-browser storage cookie get", timeout=5)
+        output = _run("agent-browser cookies get", timeout=5)
         try:
             cookies = json.loads(output)
             names = {c["name"] for c in cookies if isinstance(c, dict)}
