@@ -70,10 +70,17 @@ def _wait_for_content(selector: str, label: str = "内容", max_wait: int = 300)
     _p(f"等待{label}加载（如有验证码或登录弹窗，请在浏览器中完成）...")
     for i in range(max_wait // 2):
         time.sleep(2)
-        count = _run(f'agent-browser get count "{selector}"', timeout=5)
-        if count and count.isdigit() and int(count) > 0:
-            _p(f"  {label}已加载")
-            return True
+        # 用 eval JS 检测元素数量
+        count = _run(
+            f"agent-browser eval \"document.querySelectorAll('{selector}').length\"",
+            timeout=5
+        )
+        try:
+            if int(count) > 0:
+                _p(f"  {label}已加载")
+                return True
+        except (ValueError, TypeError):
+            pass
         if i % 10 == 9:
             _p(f"  等待中... ({(i+1)*2}秒)")
     _p(f"  {label}加载超时")
@@ -89,14 +96,22 @@ def _navigate(url: str, timeout: int = 30):
 
 def _eval_js(script: str, timeout: int = 15):
     """在页面中执行 JavaScript 并返回结果。"""
-    tmp = DATA_DIR / "_eval_tmp.js"
-    tmp.write_text(script, encoding="utf-8")
-    raw = _run(f'agent-browser eval "$(cat \'{tmp}\')"', timeout=timeout)
-    tmp.unlink(missing_ok=True)
+    try:
+        result = subprocess.run(
+            ["agent-browser", "eval", "--stdin"],
+            input=script, capture_output=True, text=True, timeout=timeout
+        )
+        raw = result.stdout.strip()
+    except Exception:
+        return None
     if not raw:
         return None
+    # agent-browser 可能返回双重 JSON（字符串包裹的 JSON）
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
+        if isinstance(parsed, str):
+            return json.loads(parsed)
+        return parsed
     except (json.JSONDecodeError, TypeError):
         return raw
 
@@ -108,7 +123,7 @@ def search_videos(keyword: str) -> dict:
     _navigate(f"https://www.douyin.com/search/{quote(keyword)}?type=video")
 
     # 等待视频链接出现
-    if not _wait_for_content('a[href*="/video/"]', "搜索结果"):
+    if not _wait_for_content('a[href*=video]', "搜索结果"):
         return {"aweme_list": [], "msg": "未获取到搜索结果"}
 
     time.sleep(2)
@@ -146,7 +161,7 @@ def search_users(keyword: str) -> dict:
     """搜索抖音用户。"""
     _navigate(f"https://www.douyin.com/search/{quote(keyword)}?type=user")
 
-    if not _wait_for_content('a[href*="/user/"]', "用户列表"):
+    if not _wait_for_content('a[href*=user]', "用户列表"):
         return {"data": [], "msg": "未获取到用户"}
 
     time.sleep(2)
