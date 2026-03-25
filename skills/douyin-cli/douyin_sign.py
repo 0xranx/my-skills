@@ -197,16 +197,31 @@ def search_users(keyword: str) -> dict:
         return {"data": [], "msg": "未获取到用户"}
 
     time.sleep(2)
+    # 先尝试 RENDER_DATA，再 fallback 到 DOM
     result = _eval_js('''
         (() => {
             const el = document.getElementById("RENDER_DATA");
-            if (!el) return JSON.stringify({data: []});
-            let data = JSON.parse(decodeURIComponent(el.textContent));
-            if (data.app && Object.keys(data).length === 1) data = data.app;
-            for (const [k, v] of Object.entries(data)) {
-                if (v && v.user_list) return JSON.stringify({data: v.user_list});
+            if (el) {
+                let data = JSON.parse(decodeURIComponent(el.textContent));
+                if (data.app && Object.keys(data).length === 1) data = data.app;
+                for (const [k, v] of Object.entries(data)) {
+                    if (v && v.user_list) return JSON.stringify({data: v.user_list});
+                }
             }
-            return JSON.stringify({data: []});
+            // DOM fallback: 从用户卡片链接提取
+            const links = document.querySelectorAll('a[href*="/user/"]');
+            const users = [];
+            const seen = new Set();
+            links.forEach(a => {
+                const href = a.getAttribute("href") || "";
+                const m = href.match(/\\/user\\/(MS4[\\w-]+)/);
+                if (!m || seen.has(m[1])) return;
+                const text = a.textContent.trim();
+                if (!text || text.length > 200 || text === "我的") return;
+                seen.add(m[1]);
+                users.push({nickname: text.split("\\n")[0].trim(), sec_uid: m[1]});
+            });
+            return JSON.stringify({data: users});
         })()
     ''')
 
@@ -218,33 +233,16 @@ def search_users(keyword: str) -> dict:
 # ── 视频详情 ─────────────────────────────────────
 
 def get_video_detail(aweme_id: str) -> dict:
-    """获取视频详情。"""
-    _navigate(f"https://www.douyin.com/video/{aweme_id}")
-
-    if not _wait_for_content('#RENDER_DATA', "视频详情"):
-        return {"aweme_detail": None, "msg": "获取视频详情失败"}
-
-    time.sleep(2)
-    result = _eval_js('''
-        (() => {
-            const el = document.getElementById("RENDER_DATA");
-            if (!el) return JSON.stringify({error: "no RENDER_DATA"});
-            let data = JSON.parse(decodeURIComponent(el.textContent));
-            if (data.app && Object.keys(data).length === 1) data = data.app;
-            // 新结构：data.videoDetail 或遍历找 aweme.detail
-            if (data.videoDetail && data.videoDetail.awemeDetail) {
-                return JSON.stringify({aweme_detail: data.videoDetail.awemeDetail});
-            }
-            for (const [k, v] of Object.entries(data)) {
-                if (v && v.aweme && v.aweme.detail) {
-                    return JSON.stringify({aweme_detail: v.aweme.detail});
-                }
-                if (v && v.awemeDetail) {
-                    return JSON.stringify({aweme_detail: v.awemeDetail});
-                }
-            }
-            return JSON.stringify({error: "no detail"});
-        })()
+    """获取视频详情（通过内部 API）。"""
+    _ensure_browser()
+    result = _eval_js(f'''
+        (() => {{
+            const x = new XMLHttpRequest();
+            x.open("GET", "/aweme/v1/web/aweme/detail/?aweme_id={aweme_id}&aid=6383&cookie_enabled=true&device_platform=webapp", false);
+            x.send();
+            if (x.status !== 200) return JSON.stringify({{error: "http " + x.status}});
+            return x.responseText;
+        }})()
     ''')
 
     if isinstance(result, dict) and result.get("aweme_detail"):
@@ -255,40 +253,16 @@ def get_video_detail(aweme_id: str) -> dict:
 # ── 评论 ─────────────────────────────────────────
 
 def get_comments(aweme_id: str) -> dict:
-    """获取视频评论。"""
-    current_url = _run(f"{_ab_prefix()} get url", timeout=5)
-    if aweme_id not in (current_url or ""):
-        _navigate(f"https://www.douyin.com/video/{aweme_id}")
-        _wait_for_content('#RENDER_DATA', "视频页面")
-        time.sleep(3)
-
-    # 滚动触发评论加载
-    _run(f'{_ab_prefix()} scroll down 500')
-    time.sleep(3)
-
-    result = _eval_js('''
-        (() => {
-            const items = document.querySelectorAll(
-                '[class*="CommentListContainer"] [class*="commentItem"],' +
-                '[class*="comment-item"],' +
-                '[class*="comment-mainContent"]'
-            );
-            if (!items.length) return JSON.stringify({comments: []});
-            const comments = [];
-            items.forEach(item => {
-                const nameEl = item.querySelector('[class*="name"], a[href*="/user/"]');
-                const contentEl = item.querySelector('[class*="content"], p');
-                const likeEl = item.querySelector('[class*="like"], [class*="digg"]');
-                if (contentEl) {
-                    comments.push({
-                        text: contentEl.textContent.trim().slice(0, 200),
-                        user: {nickname: nameEl ? nameEl.textContent.trim() : ''},
-                        digg_count: likeEl ? likeEl.textContent.trim() : '0',
-                    });
-                }
-            });
-            return JSON.stringify({comments, has_more: 1});
-        })()
+    """获取视频评论（通过内部 API）。"""
+    _ensure_browser()
+    result = _eval_js(f'''
+        (() => {{
+            const x = new XMLHttpRequest();
+            x.open("GET", "/aweme/v1/web/comment/list/?aweme_id={aweme_id}&cursor=0&count=20&aid=6383&cookie_enabled=true&device_platform=webapp", false);
+            x.send();
+            if (x.status !== 200) return JSON.stringify({{error: "http " + x.status}});
+            return x.responseText;
+        }})()
     ''')
 
     if isinstance(result, dict) and result.get("comments"):
@@ -299,29 +273,62 @@ def get_comments(aweme_id: str) -> dict:
 # ── 用户主页 ─────────────────────────────────────
 
 def get_user_profile(sec_user_id: str) -> dict:
-    """获取用户主页信息。"""
+    """获取用户主页信息（DOM 提取——API 需要签名参数）。"""
     _navigate(f"https://www.douyin.com/user/{sec_user_id}")
 
-    if not _wait_for_content('#RENDER_DATA', "用户主页"):
+    if not _wait_for_content('h1', "用户主页"):
         return {"user": None, "msg": "获取用户信息失败"}
 
     time.sleep(2)
-    result = _eval_js('''
-        (() => {
-            const el = document.getElementById("RENDER_DATA");
-            if (!el) return JSON.stringify({error: "no"});
-            let data = JSON.parse(decodeURIComponent(el.textContent));
-            if (data.app && Object.keys(data).length === 1) data = data.app;
-            // 新结构：data.user.info 包含用户信息
-            if (data.user && data.user.info && data.user.info.nickname) {
-                return JSON.stringify({user: data.user.info});
-            }
-            for (const [k, v] of Object.entries(data)) {
-                if (v && v.user && v.user.user) return JSON.stringify({user: v.user.user});
-                if (v && v.user && v.user.secUid) return JSON.stringify({user: v.user});
-            }
-            return JSON.stringify({error: "no user"});
-        })()
+    result = _eval_js(f'''
+        (() => {{
+            // h1 = 用户昵称, h2 = "作品N" 等
+            const h1 = document.querySelector("h1");
+            const nickname = h1 ? h1.textContent.trim() : "";
+            if (!nickname) return JSON.stringify({{error: "no nickname"}});
+
+            // 作品数：从 h2 "作品N" 提取
+            let aweme_count = 0;
+            document.querySelectorAll("h2").forEach(h => {{
+                const m = h.textContent.match(/作品\\s*(\\d+)/);
+                if (m) aweme_count = parseInt(m[1]);
+            }});
+
+            // 粉丝/关注/获赞：在页面文本中查找
+            const pageText = document.body.innerText;
+            const followingMatch = pageText.match(/(\\d+[\\d.万亿]*)\\s*关注/);
+            const followerMatch = pageText.match(/(\\d+[\\d.万亿]*)\\s*粉丝/);
+            const likeMatch = pageText.match(/(\\d+[\\d.万亿]*)\\s*获赞/);
+
+            // 简介：h1 同级的下一个文本块（排除粉丝数等）
+            let signature = "";
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            let foundH1 = false;
+            while (walker.nextNode()) {{
+                const t = walker.currentNode.textContent.trim();
+                if (t === nickname) {{ foundH1 = true; continue; }}
+                if (foundH1 && t.length > 5 && t.length < 300 &&
+                    !t.match(/^\\d/) && !t.includes("关注") && !t.includes("粉丝") &&
+                    !t.includes("获赞") && !t.includes("作品")) {{
+                    signature = t;
+                    break;
+                }}
+            }}
+
+            // IP 属地
+            const ipMatch = pageText.match(/IP属地[：:]\\s*(\\S+)/);
+
+            return JSON.stringify({{user: {{
+                nickname,
+                signature,
+                sec_uid: "{sec_user_id}",
+                following_count: followingMatch ? followingMatch[1] : "0",
+                follower_count: followerMatch ? followerMatch[1] : "0",
+                total_favorited: likeMatch ? likeMatch[1] : "0",
+                aweme_count,
+                ip_location: ipMatch ? ipMatch[1] : "",
+            }}}});
+        }})()
     ''')
 
     if isinstance(result, dict) and result.get("user"):
@@ -330,26 +337,16 @@ def get_user_profile(sec_user_id: str) -> dict:
 
 
 def get_user_posts(sec_user_id: str) -> dict:
-    """获取用户作品列表。"""
-    current_url = _run(f"{_ab_prefix()} get url", timeout=5)
-    if sec_user_id not in (current_url or ""):
-        _navigate(f"https://www.douyin.com/user/{sec_user_id}")
-        _wait_for_content('#RENDER_DATA', "用户主页")
-        time.sleep(3)
-
-    result = _eval_js('''
-        (() => {
-            const el = document.getElementById("RENDER_DATA");
-            if (!el) return JSON.stringify({error: "no"});
-            let data = JSON.parse(decodeURIComponent(el.textContent));
-            if (data.app && Object.keys(data).length === 1) data = data.app;
-            for (const [k, v] of Object.entries(data)) {
-                if (v && v.post && v.post.data) {
-                    return JSON.stringify({aweme_list: v.post.data, has_more: v.post.hasMore || 0});
-                }
-            }
-            return JSON.stringify({error: "no posts"});
-        })()
+    """获取用户作品列表（通过内部 API）。"""
+    _ensure_browser()
+    result = _eval_js(f'''
+        (() => {{
+            const x = new XMLHttpRequest();
+            x.open("GET", "/aweme/v1/web/aweme/post/?sec_user_id={sec_user_id}&count=20&max_cursor=0&aid=6383&cookie_enabled=true&device_platform=webapp", false);
+            x.send();
+            if (x.status !== 200) return JSON.stringify({{error: "http " + x.status}});
+            return x.responseText;
+        }})()
     ''')
 
     if isinstance(result, dict) and result.get("aweme_list"):

@@ -121,6 +121,11 @@ def fmt_search_users(data: dict) -> str:
 
     users = []
     for item in items:
+        # DOM fallback 格式：直接 {nickname, sec_uid}
+        if item.get("nickname") and not item.get("user_list") and not item.get("user_info"):
+            users.append(item)
+            continue
+        # RENDER_DATA 格式
         user_info = item.get("user_list", [{}])
         if isinstance(user_info, list) and user_info:
             users.append(user_info[0].get("user_info", {}))
